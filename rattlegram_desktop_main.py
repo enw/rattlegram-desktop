@@ -9,6 +9,7 @@ from datetime import date, datetime
 import pickle
 import os
 import platform
+import re
 import zmq
 import subprocess
 import serial
@@ -151,9 +152,15 @@ class Ui_MainWindow(object):
         self.actionVOX = QtGui.QAction(parent=MainWindow)
         self.actionVOX.setObjectName("actionVOX")
         self.actionVOX.triggered.connect(self.open_vox_dialog)
+        self.actionReceive = QtGui.QAction(parent=MainWindow)
+        self.actionReceive.setObjectName("actionReceive")
+        self.actionReceive.setCheckable(True)
+        self.actionReceive.setEnabled(rx_script() is not None)
+        self.actionReceive.toggled.connect(self.toggle_receive)
         self.menuSettings.addAction(self.actionCallsign)
         self.menuSettings.addAction(self.actionCFO)
         self.menuSettings.addAction(self.actionVOX)
+        self.menuSettings.addAction(self.actionReceive)
         self.menuHelp.addAction(self.actionAbout)
         self.menubar.addAction(self.menuSettings.menuAction())
         self.menubar.addAction(self.menuHelp.menuAction())
@@ -162,6 +169,17 @@ class Ui_MainWindow(object):
         self.model.setObjectName("messageViewItems")
         self.messageView.setModel(self.model)
         self.messageView.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        self.userlist_model = QStandardItemModel()
+        self.userlist_model.setObjectName("userlistViewItems")
+        self.userlistView.setModel(self.userlist_model)
+        self.userlistView.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.seen_callsigns = set()
+
+        # Receiving is opt-in: it holds the microphone open, so don't take it
+        # without being asked. Toggled from Settings -> Receive.
+        self.rx_process = None
+        self.rx_buffer = b''
 
         self.retranslateUi(MainWindow)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
@@ -175,6 +193,10 @@ class Ui_MainWindow(object):
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
         self.worker.progress.connect(self.update_progress)
+
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.stop_receiver)
         print('setupUi() complete')
 
     def retranslateUi(self, MainWindow):
@@ -187,6 +209,7 @@ class Ui_MainWindow(object):
         self.actionCallsign.setText(_translate("MainWindow", "Callsign"))
         self.actionCFO.setText(_translate("MainWindow", "CFO"))
         self.actionVOX.setText(_translate("MainWindow", "VOX"))
+        self.actionReceive.setText(_translate("MainWindow", "Receive"))
 
     def open_about_dialog(self):
         dialog = QtWidgets.QDialog()
@@ -211,6 +234,60 @@ class Ui_MainWindow(object):
         vox_dialog = Ui_VOXDialog()
         vox_dialog.setupUi(dialog)
         dialog.exec()
+
+    def toggle_receive(self, enabled):
+        if enabled:
+            self.start_receiver()
+        else:
+            self.stop_receiver()
+
+    def start_receiver(self):
+        script = rx_script()
+        if script is None or not os.access(script, os.X_OK):
+            print('receive: no usable script (%s)' % script)
+            self.statusbar.showMessage('Receive unavailable on this platform')
+            self.actionReceive.setChecked(False)
+            return
+        self.rx_buffer = b''
+        self.rx_process = QtCore.QProcess()
+        self.rx_process.readyReadStandardOutput.connect(self.rx_ready_read)
+        self.rx_process.start(script, [])
+        print('receive: started %s' % script)
+        self.statusbar.showMessage('Receiving...')
+
+    def stop_receiver(self):
+        if self.rx_process is None:
+            return
+        print('receive: stopping')
+        self.rx_process.readyReadStandardOutput.disconnect()
+        self.rx_process.terminate()
+        if not self.rx_process.waitForFinished(2000):
+            self.rx_process.kill()
+        self.rx_process = None
+        self.statusbar.showMessage('Receive stopped')
+
+    def rx_ready_read(self):
+        self.rx_buffer += bytes(self.rx_process.readAllStandardOutput())
+        while b'\n' in self.rx_buffer:
+            line, self.rx_buffer = self.rx_buffer.split(b'\n', 1)
+            self.handle_rx_line(line.decode('utf-8', 'replace').strip())
+
+    def handle_rx_line(self, line):
+        if not line:
+            return
+        print('rx: %s' % line)
+        m = RX_LINE.match(line)
+        if not m:
+            # progress chatter from the script, e.g. "listening in 8s windows"
+            return
+        callsign, message = m.group(1), m.group(2)
+        t = datetime.utcnow()
+        self.model.appendRow(QStandardItem(
+            "%s <%s> %s" % (t.isoformat().split('.')[0], callsign, message)))
+        self.messageView.scrollToBottom()
+        if callsign and callsign not in self.seen_callsigns:
+            self.seen_callsigns.add(callsign)
+            self.userlist_model.appendRow(QStandardItem(callsign))
 
     def rattlegram_send(self):
         message = self.messageTextEdit.text()
@@ -242,6 +319,18 @@ def tx_script():
     if platform.system() == 'Darwin':
         return os.path.join(REPO_DIR, 'bin', 'macos_tx.sh')
     return os.path.join(REPO_DIR, 'bin', 'rattlegram_tx.sh')
+
+def rx_script():
+    # Only Darwin has a receive script whose output this parser understands.
+    # bin/rattlegram_rx.sh prints the raw decoder output in a different shape.
+    if platform.system() == 'Darwin':
+        return os.path.join(REPO_DIR, 'bin', 'macos_rx.sh')
+    return None
+
+# Lines emitted by bin/macos_rx.sh, e.g.
+#   RX <ZL3TUX> [flips 0] HELLO WORLD
+#   RX <ZL3TUX> [Es/N0 17.1 17.9] HELLO WORLD
+RX_LINE = re.compile(r'^RX <([^>]*)> \[[^\]]*\] (.*)$')
 
 def ptt_on():
     # PTT is optional: with no 'ptt' key configured we assume VOX, which the tx

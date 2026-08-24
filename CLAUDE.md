@@ -62,7 +62,9 @@ Both filters hard-code Qt key codes as integers (`16777219` = Backspace, etc.) a
 
 **Known-good interop parameters.** Confirmed working in both directions against the real Rattlegram app on iOS, acoustically coupled: `CFO=1300`, `NOISE_SYMBOLS=4`, `MAPPING=4`, `RATE=48000`, `BITS=16`, `CHANNEL=0`, using the bundled fork binaries. These are the defaults in `bin/macos_tx.sh` and match what `bin/rattlegram_tx.sh` passes. Typical Es/N0 over laptop speaker to phone mic is 15–22 dB, so there is plenty of margin. If interop ever breaks, suspect the binary/protocol before these numbers.
 
-**RX path is not implemented.** `bin/rattlegram_rx.sh` (`arecord | decode` in a loop) exists but nothing in the GUI invokes it, so the message list only ever shows locally-sent messages and the user list is never populated.
+**RX path** — on Darwin, `Settings → Receive` is a checkable action that starts `bin/macos_rx.sh` as a `QProcess`; `rx_ready_read()` buffers stdout, and `handle_rx_line()` matches the `RX <CALL> [...] TEXT` shape with the `RX_LINE` regex, appending to the message model and adding unseen callsigns to `userlist_model`. Receiving is deliberately **opt-in and off by default**, because it holds the microphone open. It is stopped on `aboutToQuit` so the mic is released. On non-Darwin `rx_script()` returns `None` and the action is disabled — `bin/rattlegram_rx.sh` prints the raw decoder output in a different shape that `RX_LINE` does not match.
+
+Latency is up to one capture window (8 s default), since the script records a fixed window then decodes. `macos_rx.sh` also joins each window to its predecessor to catch transmissions straddling a boundary, but **only when the previous window decoded nothing** — otherwise the same transmission gets reported twice, once from its own window and once from the join.
 
 ## Hazards to know before editing
 

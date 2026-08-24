@@ -74,17 +74,29 @@ try_decode() {
 
 echo "listening in ${WINDOW}s windows at ${RATE}Hz -- Ctrl-C to stop"
 
+prev_ok=1	# 1 = previous window decoded nothing
+
 while : ; do
 	rm -f "$WORK/cur.wav"
 	sox -d -c 1 -b 16 -r "$RATE" -t wav "$WORK/cur.wav" trim 0 "$WINDOW" 2>/dev/null
 
-	if ! try_decode cur.wav ; then
-		# maybe the transmission straddled the window boundary
-		if [ -f "$WORK/prev.wav" ]; then
+	if try_decode cur.wav ; then
+		prev_ok=0
+	else
+		# Only join with the previous window if that one decoded nothing
+		# either. If it succeeded, its audio is already accounted for and
+		# joining would report the same transmission a second time.
+		if [ "$prev_ok" = 1 ] && [ -f "$WORK/prev.wav" ]; then
 			sox "$WORK/prev.wav" "$WORK/cur.wav" "$WORK/join.wav" 2>/dev/null
-			try_decode join.wav || echo "RX ... nothing decoded"
+			if try_decode join.wav ; then
+				prev_ok=0
+			else
+				echo "RX ... nothing decoded"
+				prev_ok=1
+			fi
 		else
 			echo "RX ... nothing decoded"
+			prev_ok=1
 		fi
 	fi
 

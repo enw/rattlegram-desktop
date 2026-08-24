@@ -136,6 +136,29 @@ class Driver:
     def do_config(self, key):
         out("config %s = %r" % (key, self.ui.config.get_value(key)))
 
+    def do_rx(self, state="on"):
+        # Drives the Settings -> Receive toggle, which spawns bin/macos_rx.sh
+        # as a QProcess. Requires the event loop to be running to see output.
+        self.ui.actionReceive.setChecked(state == "on")
+        self.app.processEvents()
+        out("rx %s (enabled=%s, process=%s)"
+            % (state, self.ui.actionReceive.isEnabled(),
+               self.ui.rx_process is not None))
+
+    def do_users(self):
+        n = self.ui.userlist_model.rowCount()
+        out("users=%d" % n)
+        for r in range(n):
+            out("  [%d] %r" % (r, self.ui.userlist_model.item(r).text()))
+
+    def do_wait(self, seconds="10"):
+        # Spin the event loop so QProcess output is delivered.
+        from PyQt6.QtCore import QEventLoop, QTimer
+        loop = QEventLoop()
+        QTimer.singleShot(int(float(seconds) * 1000), loop.quit)
+        loop.exec()
+        out("waited %ss" % seconds)
+
     # --- dispatch ----------------------------------------------------------
     def dispatch(self, line):
         parts = line.strip().split()
@@ -156,6 +179,12 @@ class Driver:
             self.do_dialog(*args[:2])
         elif cmd == "config":
             self.do_config(*args[:1])
+        elif cmd == "rx":
+            self.do_rx(*args[:1])
+        elif cmd == "users":
+            self.do_users()
+        elif cmd == "wait":
+            self.do_wait(*args[:1])
         elif cmd == "help":
             out(__doc__)
         else:
