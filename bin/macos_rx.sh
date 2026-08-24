@@ -33,8 +33,11 @@ WINDOW=${WINDOW:-8}
 RATE=${RATE:-48000}
 IMAGE=${IMAGE:-debian:stable-slim}
 
-if ! docker info >/dev/null 2>&1; then
-	echo "docker is not running -- needed to run the Linux decoder" >&2
+NATIVE="$HERE/$(uname -s | tr A-Z a-z)-$(uname -m)/decode"
+
+if [ ! -x "$NATIVE" ] && ! docker info >/dev/null 2>&1; then
+	echo "no native decoder at $NATIVE and docker is not running." >&2
+	echo "build one with: make -C native" >&2
 	exit 1
 fi
 
@@ -44,15 +47,28 @@ trap 'rm -rf "$WORK"; exit 0' EXIT INT TERM
 try_decode() {
 	# $1 = wav to decode, relative to $WORK
 	rm -f "$WORK/out.bin"
-	docker run --rm --platform linux/arm64 \
-		-v "$REPO":/w -v "$WORK":/out -w /w "$IMAGE" \
-		./bin/linux-aarch64/decode /out/out.bin "/out/$1" \
-		> "$WORK/log.txt" 2>&1 || return 1
+	if [ -x "$NATIVE" ]; then
+		# native: INPUT OUTPUT
+		"$NATIVE" "$WORK/$1" "$WORK/out.bin" > "$WORK/log.txt" 2>&1 || return 1
+	else
+		# the fork binary takes them the other way round: OUTPUT INPUT
+		docker run --rm --platform linux/arm64 \
+			-v "$REPO":/w -v "$WORK":/out -w /w "$IMAGE" \
+			./bin/linux-aarch64/decode /out/out.bin "/out/$1" \
+			> "$WORK/log.txt" 2>&1 || return 1
+	fi
 	[ -s "$WORK/out.bin" ] || return 1
 	CALL=$(grep -a "call sign" "$WORK/log.txt" | sed 's/.*call sign: *//')
+	# Es/N0 is only reported by the fork binary; the app's decoder API
+	# doesn't expose it, so fall back to bit flips.
 	SNR=$(grep -a "Es/N0" "$WORK/log.txt" | sed 's/.*(dB): *//')
+	FLIPS=$(grep -a "bit flips" "$WORK/log.txt" | sed 's/.*: *//')
 	TEXT=$(tr -d '\000' < "$WORK/out.bin")
-	printf 'RX <%s> [Es/N0 %s] %s\n' "${CALL:-?}" "${SNR:-?}" "$TEXT"
+	if [ -n "$SNR" ]; then
+		printf 'RX <%s> [Es/N0 %s] %s\n' "${CALL:-?}" "$SNR" "$TEXT"
+	else
+		printf 'RX <%s> [flips %s] %s\n' "${CALL:-?}" "${FLIPS:-?}" "$TEXT"
+	fi
 	return 0
 }
 

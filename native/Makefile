@@ -21,7 +21,7 @@ CXXFLAGS += -std=c++17 -O3 -fno-exceptions -fno-rtti -I$(CPP)
 
 .PHONY: all clean distclean
 
-all: $(OUT)/encode
+all: $(OUT)/encode $(OUT)/decode
 
 $(RATTLEGRAM_SRC):
 	git clone --depth 1 https://github.com/aicodix/rattlegram.git $@
@@ -32,7 +32,12 @@ $(OUT)/encode: encode.cc | $(RATTLEGRAM_SRC)
 	@echo "built $@"
 
 clean:
-	rm -f $(OUT)/encode
+	rm -f $(OUT)/encode $(OUT)/decode
 
 distclean: clean
 	rm -rf $(RATTLEGRAM_SRC)
+
+$(OUT)/decode: decode.cc | $(RATTLEGRAM_SRC)
+	mkdir -p $(OUT)
+	$(CXX) $(CXXFLAGS) $< -o $@
+	@echo "built $@"
