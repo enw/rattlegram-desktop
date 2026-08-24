@@ -8,6 +8,7 @@
 from datetime import date, datetime
 import pickle
 import os
+import platform
 import zmq
 import subprocess
 import serial
@@ -233,6 +234,38 @@ class Ui_MainWindow(object):
                 self.messageTextEdit.setText('')
                 self.model.appendRow(messageViewItem)
 
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def tx_script():
+    # Darwin has no arecord/aplay and no native build of the encode fork, so it
+    # gets its own script. Everything else keeps the original Linux path.
+    if platform.system() == 'Darwin':
+        return os.path.join(REPO_DIR, 'bin', 'macos_tx.sh')
+    return os.path.join(REPO_DIR, 'bin', 'rattlegram_tx.sh')
+
+def ptt_on():
+    # PTT is optional: with no 'ptt' key configured we assume VOX, which the tx
+    # script already covers by prepending a warm-up tone. Returns the open port
+    # so ptt_off() can drop DTR, or None.
+    config = RattlegramDesktopConfig()
+    device = config.get_value('ptt')
+    if not device:
+        return None
+    try:
+        ser = serial.Serial(device, 19200)
+        ser.dtr = True
+        return ser
+    except Exception as e:
+        # A missing or busy port must not swallow the message.
+        print('PTT unavailable on %s: %s' % (device, e))
+        return None
+
+def ptt_off(ser):
+    if ser is None:
+        return
+    ser.dtr = False
+    ser.close()
+
 def transmit(message):
     if len(message) == 0: return True
     config = RattlegramDesktopConfig()
@@ -240,25 +273,26 @@ def transmit(message):
     cfo = config.get_value('CFO')
     print('%s\t%s\t%s' % (callsign, cfo, message))
 
-    # TODO
-
     _env = os.environ
     _env['CALLSIGN'] = callsign
     _env['CFO'] = str(cfo)
 
-    # TODO if PTT control on
-    ser = serial.Serial('/dev/ttyUSB0', 19200)
-    ser.dtr = True
-    p0 = subprocess.run(['/home/barf/src/rattlegram-desktop/bin/rattlegram_tx.sh', message], env=_env, capture_output=True)
-    ser.dtr = False
-    ser.close()
+    script = tx_script()
+    if not os.access(script, os.X_OK):
+        print('transmit: %s is missing or not executable' % script)
+        return False
 
-    if p0.returncode > 0:
+    ser = ptt_on()
+    try:
+        p0 = subprocess.run([script, message], env=_env, capture_output=True)
+    finally:
+        ptt_off(ser)
+
+    if p0.returncode != 0:
         print(p0)
         return False
 
-    if p0.returncode == 0:
-        return True
+    return True
 
 def ping():
     # TODO
@@ -268,13 +302,16 @@ def ping():
     _env = os.environ
     _env['CALLSIGN'] = callsign
     _env['CFO'] = str(cfo)
-    p0 = subprocess.run(['/home/barf/src/rattlegram-desktop/bin/modem_ping.sh'], env=_env, capture_output=True)
-    if p0.returncode > 0:
+    script = os.path.join(REPO_DIR, 'bin', 'modem_ping.sh')
+    if not os.access(script, os.X_OK):
+        print('ping: %s is missing or not executable' % script)
+        return False
+    p0 = subprocess.run([script], env=_env, capture_output=True)
+    if p0.returncode != 0:
         print(p0)
         return False
 
-    if p0.returncode == 0:
-        return True
+    return True
 
 if __name__ == "__main__":
     import sys
